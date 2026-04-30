@@ -1,0 +1,22 @@
+# macOS metadata
+.DS_Store
+
+# login info
+/.env
+
+# cache (legacy, from pywenku8api testing)
+/wenku8_cache.db
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# book database & crawl records
+/novels.db
+/crawl_log.txt
+/crawl_log.txt.tmp
+/crawl_progress.txt
+
+# test artifacts
+/cover.jpg

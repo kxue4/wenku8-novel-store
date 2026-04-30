@@ -1,0 +1,7 @@
+httpx
+httpx-curl-cffi
+lxml
+zendriver
+latest-user-agents
+user-agents
+python-dotenv
