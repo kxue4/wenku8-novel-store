@@ -53,6 +53,16 @@ class Wenku8Client:
         try:
             result = await self.session.request(*args, **kwargs)
             result.raise_for_status()
+            # 检测 CF 伪装成 200 的挑战页（状态码正常但内容是 CF 拦截页）
+            if not cf_bypassed and b"Just a moment" in result.content[:1000]:
+                url = args[1] if len(args) > 1 else kwargs.get("url")
+                if url:
+                    try:
+                        await self._bypass_cloudflare(str(url))
+                    except Exception:
+                        pass
+                kwargs["_cf_bypassed"] = True
+                return await self._request(*args, **kwargs)
             return result
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (403, 503) and not cf_bypassed:
@@ -133,7 +143,7 @@ class Wenku8Client:
         tags_raw = _extract(
             parser, '//*[@id="content"]/div[1]/table[2]/tr/td[2]/span[1]/b', split=True
         )
-        tags = [t for t in tags_raw.split(" ") if t] if tags_raw else []
+        tags = [t.strip() for t in re.split(r"[\s\xa0]+", tags_raw) if t.strip()] if tags_raw else []
         animation = bool(
             len(parser.xpath('//*[@id="content"]/div[1]/table[2]/tr/td[1]/span/b'))
         )
@@ -149,8 +159,21 @@ class Wenku8Client:
             "press": press,
             "word_count": word_count,
             "animation": animation,
-            "cover": f"https://img.wenku8.com/image/{aid // 1000}/{aid}/{aid}s.jpg",
         }
+
+    async def get_latest_bookid(self) -> int | None:
+        """从最新上架榜取当前最大 bookid。"""
+        try:
+            resp = await self._request(
+                "GET",
+                ENDPOINT + "/modules/article/toplist.php?sort=postdate",
+            )
+        except Exception as e:
+            print(f"[get_latest_bookid] 请求失败: {e}")
+            return None
+        resp.encoding = "gbk"
+        aids = [int(m) for m in re.findall(r"/book/(\d+)\.htm", resp.text)]
+        return max(aids) if aids else None
 
     async def search_by_name(self, keyword: str) -> int | None:
         """按书名搜索，返回第一条结果的 aid；未找到返回 None。"""

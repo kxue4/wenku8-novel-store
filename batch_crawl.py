@@ -2,9 +2,10 @@
 batch_crawl.py — 批量抓取 wenku8 书籍元数据（长期维护版）
 
 用法示例:
-    python3.13 batch_crawl.py --start 1 --end 1000
-    python3.13 batch_crawl.py --start 1001 --end 2000 --delay-ok 2.0
-    python3.13 batch_crawl.py --start 1 --end 1000  # 自动跳过已抓取条目
+    python3 batch_crawl.py --start 1 --end 1000
+    python3 batch_crawl.py --start 1001 --end 2000 --delay-ok 2.0
+    python3 batch_crawl.py --start 1 --end 1000  # 自动跳过已抓取条目
+    python3 batch_crawl.py --full                 # 全表更新
 
 crawl_log.txt 列定义（TSV）:
     aid  status  crawl_date  novel_status  title  author  error
@@ -21,7 +22,6 @@ import asyncio
 import os
 import time
 from datetime import date, datetime
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -116,8 +116,9 @@ def _should_skip(entry: dict, today: date) -> bool:
 # ════════════════════════════════════════════════════
 
 async def run(
-    start: int,
-    end: int,
+    start: int | None,
+    end: int | None,
+    full: bool,
     delay_ok: float,
     delay_fail: float,
     delay_burst: float,
@@ -129,10 +130,29 @@ async def run(
         print("[错误] 请在 .env 中配置 WENKU8_USERNAME 和 WENKU8_PASSWORD")
         return
 
-    today      = date.today()
-    log        = _load_log()
-    client     = Wenku8Client()
-    conn       = init_db(DB_PATH)
+    today  = date.today()
+    log    = _load_log()
+    client = Wenku8Client()
+    conn   = init_db(DB_PATH)
+
+    # ── --full 模式：自动取最大 bookid ───────────────
+    if full:
+        print(f"[{_ts()}] 登录中...")
+        await client.login(username, password)
+        print(f"[{_ts()}] CF 暖机中...")
+        await warmup(client)
+        print(f"[{_ts()}] 获取最新上架 bookid...")
+        latest = await client.get_latest_bookid()
+        if not latest:
+            print("[错误] 无法获取最新 bookid，请检查网络")
+            conn.close()
+            await client.close()
+            return
+        start, end = 1, latest
+        print(f"[{_ts()}] 全表更新模式：范围 1~{latest}")
+        already_logged_in = True
+    else:
+        already_logged_in = False
 
     # ── 计算实际需要抓取的 aid 列表 ──────────────────
     to_crawl: list[int] = []
@@ -149,13 +169,15 @@ async def run(
     if not to_crawl:
         print("[完成] 全部条目均已是最新，无需抓取。")
         conn.close()
+        await client.close()
         return
 
     # ── 登录 + 暖机 ──────────────────────────────────
-    print(f"[{_ts()}] 登录中...")
-    await client.login(username, password)
-    print(f"[{_ts()}] CF 暖机中...")
-    await warmup(client)
+    if not already_logged_in:
+        print(f"[{_ts()}] 登录中...")
+        await client.login(username, password)
+        print(f"[{_ts()}] CF 暖机中...")
+        await warmup(client)
     print(f"[{_ts()}] 暖机完成，开始抓取")
 
     ok_count    = 0
@@ -223,6 +245,11 @@ async def run(
                 consec_fail = 0
             else:
                 await asyncio.sleep(delay)
+
+            # 每 300 条主动刷新一次 CF session，防止长时间爬取中 session 过期
+            if i % 300 == 0:
+                print(f"[{_ts()}] 定期刷新 CF session（第 {i} 条）...")
+                await warmup(client)
     finally:
         _write_log(log)   # 确保中断时也落盘
         conn.close()
@@ -245,16 +272,21 @@ if __name__ == "__main__":
         description="批量抓取 wenku8 书籍元数据",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--start",       type=int, required=True,              help="起始 aid（含）")
-    parser.add_argument("--end",         type=int, required=True,              help="结束 aid（含）")
+    parser.add_argument("--start",       type=int, default=None,               help="起始 aid（含），--full 时忽略")
+    parser.add_argument("--end",         type=int, default=None,               help="结束 aid（含），--full 时忽略")
+    parser.add_argument("--full",        action="store_true",                  help="全表更新：自动获取最大 bookid，从 1 跑到最新")
     parser.add_argument("--delay-ok",    type=float, default=DEFAULT_DELAY_OK,    help="成功后间隔秒数")
     parser.add_argument("--delay-fail",  type=float, default=DEFAULT_DELAY_FAIL,  help="失败后间隔秒数")
     parser.add_argument("--delay-burst", type=float, default=DEFAULT_DELAY_BURST, help="连续失败冷却秒数")
     args = parser.parse_args()
 
+    if not args.full and (args.start is None or args.end is None):
+        parser.error("必须指定 --start 和 --end，或使用 --full 模式")
+
     asyncio.run(run(
         start       = args.start,
         end         = args.end,
+        full        = args.full,
         delay_ok    = args.delay_ok,
         delay_fail  = args.delay_fail,
         delay_burst = args.delay_burst,

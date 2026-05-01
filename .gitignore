@@ -16,7 +16,6 @@ __pycache__/
 /novels.db
 /crawl_log.txt
 /crawl_log.txt.tmp
-/crawl_progress.txt
 
 # test artifacts
 /cover.jpg
